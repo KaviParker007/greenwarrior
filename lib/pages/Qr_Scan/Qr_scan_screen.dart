@@ -169,6 +169,7 @@ class _QRScannerScreenState extends State<QRScannerScreen>
         throw 'Location permission denied';
       }
 
+
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
