@@ -1,0 +1,1200 @@
+import 'dart:convert';
+import 'package:flutter/material.dart';
+import 'package:flutter_slidable/flutter_slidable.dart';
+import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
+import 'package:intl/intl.dart';
+import '../../components/drawer_page.dart';
+import '../../config.dart';
+import '../login.dart';
+
+
+
+class ManualAttendance extends StatefulWidget {
+  const ManualAttendance({super.key});
+
+  @override
+  State<ManualAttendance> createState() => _ManualAttendanceState();
+}
+
+class _ManualAttendanceState extends State<ManualAttendance> {
+  bool isLoading = false;
+  bool isLoggedIn = false;
+  String? username;
+  String? password;
+  String? usertype;
+  List<dynamic> attendanceList = [];
+  List<dynamic> filteredAttendanceList = [];
+  DateTime selectedDate = DateTime.now();
+  final String baseUrl = AppConfig.apiUrl;
+  final TextEditingController _searchController = TextEditingController();
+  bool _isSearching = false;
+  bool _selectionMode = false;
+  List<int> selectedIds = [];
+  bool _isManager = false;
+  bool _isZoneView = false;
+  String _currentZoneName = '';
+  int _currentZoneId = 0;
+
+  // Pagination variables
+  int currentPage = 1;
+  int? totalPages;
+  int? totalItems;
+  String? nextPageUrl;
+  String? previousPageUrl;
+
+  String get formattedDate => DateFormat('yyyy-MM-dd').format(selectedDate);
+
+  @override
+  void initState() {
+    super.initState();
+    _checkLoginStatus();
+    _searchController.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _checkLoginStatus() async {
+    final prefs = await SharedPreferences.getInstance();
+    username = prefs.getString('username');
+    password = prefs.getString('password');
+    usertype = prefs.getString('usertype');
+    print('usertype_____');
+    print(usertype);
+
+
+    if (username != null && password != null) {
+      setState(() => isLoggedIn = true);
+      await _fetchAttendance(currentPage);
+    }
+  }
+
+  Future<void> _fetchAttendance(int page) async {
+    setState(() {
+      isLoading = true;
+      currentPage = page;
+      selectedIds.clear();
+      _selectionMode = false;
+      _isZoneView = false;
+      _currentZoneName = '';
+      _currentZoneId = 0;
+    });
+
+    try {
+      final auth = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+      final response = await http.get(
+        Uri.parse("$baseUrl/hr/drf_list_n_write_att/?attendance_date=$formattedDate"),
+        headers: {
+          'Content-Type': 'application/json',
+          'authorization': auth,
+        },
+      );
+      print('response__check1');
+      print("$baseUrl/hr/drf_list_n_write_att/?attendance_date=$formattedDate");
+      print(response.statusCode);
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final format = data['format'];
+
+        setState(() {
+          _isManager = format == 'zones';
+          attendanceList = data['result'].map((item) {
+            return {...item, 'isSelected': false};
+          }).toList();
+          filteredAttendanceList = attendanceList;
+
+          if (!_isManager) {
+            totalItems = data['result'].length;
+            totalPages = 1;
+          }
+        });
+      } else {
+        _showError("Failed to load attendancek: ${response.statusCode}");
+      }
+    } catch (e) {
+      _showError("Error: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  Future<void> _fetchZoneAttendance(int zoneId, String zoneName) async {
+    setState(() {
+      isLoading = true;
+      _isZoneView = true;
+      _currentZoneName = zoneName;
+      _currentZoneId = zoneId;
+    });
+
+    try {
+      final auth = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+      final response = await http.get(
+        Uri.parse("$baseUrl/hr/drf_write_manual_present_zones/?attendance_date=$formattedDate&zone_id=$zoneId"),
+        headers: {
+          'Content-Type': 'application/json',
+          'authorization': auth,
+        },
+      );
+      print('response__check2');
+      print("$baseUrl/hr/drf_write_manual_present_zones/?attendance_date=$formattedDate&zone_id=$zoneId");
+      print(response.statusCode);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+
+        setState(() {
+          attendanceList = data['result'].map((item) {
+            return {...item, 'isSelected': false};
+          }).toList();
+          filteredAttendanceList = attendanceList;
+          totalItems = data['result'].length;
+          totalPages = 1;
+        });
+      } else {
+        _showError("Failed to load zone attendance: ${response.statusCode}");
+      }
+    } catch (e) {
+      _showError("Error: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  Future<void> _selectDate(BuildContext context) async {
+    final DateTime? picked = await showDatePicker(
+      context: context,
+      initialDate: selectedDate,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      builder: (BuildContext context, Widget? child) {
+        return Theme(
+          data: ThemeData.light().copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Colors.blue,
+              onPrimary: Colors.white,
+            ),
+            dialogBackgroundColor: Colors.white,
+          ),
+          child: child!,
+        );
+      },
+    );
+
+    if (picked != null && picked != selectedDate) {
+      setState(() {
+        selectedDate = picked;
+      });
+      if (_isZoneView) {
+        await _fetchZoneAttendance(_currentZoneId, _currentZoneName);
+      } else {
+        await _fetchAttendance(1);
+      }
+    }
+  }
+
+  void _onSearchChanged() {
+    final query = _searchController.text.toLowerCase();
+    if (query.isEmpty) {
+      setState(() {
+        filteredAttendanceList = attendanceList;
+      });
+    } else {
+      setState(() {
+        filteredAttendanceList = attendanceList.where((item) {
+          if (_isManager && !_isZoneView) {
+            final zoneCode = item['zone_code']?.toString().toLowerCase() ?? '';
+            final zoneName = item['zone_name']?.toString().toLowerCase() ?? '';
+            return zoneCode.contains(query) || zoneName.contains(query);
+          } else {
+            final code = item['essl_code']?.toString().toLowerCase() ?? '';
+            final name = item['employee_name']?.toString().toLowerCase() ?? '';
+            return code.contains(query) || name.contains(query);
+          }
+        }).toList();
+      });
+    }
+  }
+
+  void _startSearch() {
+    ModalRoute.of(context)?.addLocalHistoryEntry(
+      LocalHistoryEntry(onRemove: _stopSearching),
+    );
+    setState(() {
+      _isSearching = true;
+    });
+  }
+
+  void _stopSearching() {
+    _clearSearchQuery();
+    setState(() {
+      _isSearching = false;
+    });
+  }
+
+  void _clearSearchQuery() {
+    setState(() {
+      _searchController.clear();
+      filteredAttendanceList = attendanceList;
+      _isSearching = false;
+    });
+  }
+
+  void _toggleSelectionMode(bool enabled) {
+    setState(() {
+      _selectionMode = enabled;
+      if (!enabled) {
+        attendanceList = attendanceList.map((item) {
+          return {...item, 'isSelected': false};
+        }).toList();
+        filteredAttendanceList = filteredAttendanceList.map((item) {
+          return {...item, 'isSelected': false};
+        }).toList();
+        selectedIds.clear();
+      }
+    });
+  }
+  void _showLockedCardMessage(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('This card is locked and cannot be modified'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+  }
+  void _toggleItemSelection(int id, bool selected) {
+    // Find the item to check if it's locked
+    final item = attendanceList.firstWhere((item) => item['id'] == id, orElse: () => {});
+    final bool isLocked = item['lock_card'] ?? false;
+
+    if (isLocked) {
+      _showLockedCardMessage(context);
+      return;
+    }
+
+    setState(() {
+      if (selected) {
+        selectedIds.add(id);
+      } else {
+        selectedIds.remove(id);
+      }
+
+      attendanceList = attendanceList.map((item) {
+        if (item['id'] == id) {
+          return {...item, 'isSelected': selected};
+        }
+        return item;
+      }).toList();
+
+      filteredAttendanceList = filteredAttendanceList.map((item) {
+        if (item['id'] == id) {
+          return {...item, 'isSelected': selected};
+        }
+        return item;
+      }).toList();
+    });
+  }
+
+  Future<void> _submitBulkAttendance() async {
+    if (selectedIds.isEmpty) {
+      _showError("Please select at least one attendance record");
+      return;
+    }
+    final List<int> lockedIds = [];
+    for (var id in selectedIds) {
+      final item = attendanceList.firstWhere((item) => item['id'] == id, orElse: () => {});
+      if (item['lock_card'] == true) {
+        lockedIds.add(id);
+      }
+    }
+
+    if (lockedIds.isNotEmpty) {
+      _showError("Cannot process locked cards: ${lockedIds.join(', ')}");
+      return;
+    }
+    setState(() => isLoading = true);
+
+    try {
+      final auth = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+      final response = await http.post(
+        Uri.parse("$baseUrl/hr/drf_list_n_write_att/"),
+        headers: {
+          'Content-Type': 'application/json',
+          'authorization': auth,
+        },
+        body: jsonEncode({
+          "ma_ids": selectedIds,
+          "confirmation": 1,
+        }),
+      );
+      print('response__check3');
+      print("$baseUrl/hr/drf_list_n_write_att/");
+      print(response.statusCode);
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(result['message'] ?? 'Bulk update successful'),
+            backgroundColor: Colors.green,
+          ),
+        );
+        if (_isZoneView) {
+          await _fetchZoneAttendance(_currentZoneId, _currentZoneName);
+        } else {
+          _fetchAttendance(currentPage);
+        }
+      } else {
+        _showError("Failed to update attendance: ${response.statusCode}");
+      }
+    } catch (e) {
+      _showError("Error: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  void _showBulkActionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Bulk Action'),
+        content: const Text('Mark all selected as present or absent?'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _submitBulkAttendance();
+            },
+            child: const Text('Absent', style: TextStyle(color: Colors.red)),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              _submitBulkAttendance();
+            },
+            child: const Text('Present', style: TextStyle(color: Colors.green)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  int _extractPageFromUrl(String? url) {
+    if (url == null) return 1;
+    try {
+      Uri uri = Uri.parse(url);
+      String pageString = uri.queryParameters['page'] ?? '1';
+      return int.tryParse(pageString) ?? 1;
+    } catch (e) {
+      return 1;
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Theme.of(context).colorScheme.error,
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          const Icon(Icons.calendar_today, size: 64, color: Colors.grey),
+          const SizedBox(height: 16),
+          const Text(
+            'No attendance data found',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _isZoneView
+                ? 'No records available for $_currentZoneName on ${DateFormat('MMMM dd, yyyy').format(selectedDate)}'
+                : 'No records available for ${DateFormat('MMMM dd, yyyy').format(selectedDate)}',
+            style: const TextStyle(color: Colors.grey),
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton(
+            onPressed: () => _selectDate(context),
+            child: const Text('Select Different Date'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildManagerCard(dynamic item) {
+    final zoneName = item['zone_name']?.toString() ?? 'N/A';
+    final zoneCode = item['zone_code']?.toString() ?? 'N/A';
+    final isActive = item['is_active'] ?? false;
+    final zoneId = item['id'] ?? 0;
+
+    return Card(
+      color: Colors.grey[800],
+      child: ListTile(
+        title: Text(
+          zoneCode,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Text(zoneName),
+            Text(
+              isActive ? 'Active' : 'Inactive',
+              style: TextStyle(
+                color: isActive ? Colors.green : Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+        onTap: () => _fetchZoneAttendance(zoneId, zoneName),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!isLoggedIn) {
+      return const LoginPage();
+    }
+
+    return Scaffold(
+      appBar: AppBar(
+        title: _isSearching
+            ? TextField(
+          controller: _searchController,
+          autofocus: true,
+          decoration: InputDecoration(
+            hintText: _isManager && !_isZoneView
+                ? 'Search by zone...'
+                : 'Search by code or name...',
+            border: InputBorder.none,
+            suffixIcon: IconButton(
+              icon: const Icon(Icons.clear),
+              onPressed: _clearSearchQuery,
+            ),
+          ),
+          style: const TextStyle(color: Colors.white),
+        )
+            : _selectionMode
+            ? Text('${selectedIds.length} selected')
+            : Text(_isZoneView
+            ? _currentZoneName
+            : _isManager ? 'Zones' : 'Pending',style: TextStyle(
+          color: Colors.white,
+          fontSize: 15,
+          fontWeight: FontWeight.bold,
+        ),),
+        actions: [
+          if (_isZoneView)
+            IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () {
+                setState(() {
+                  _isZoneView = false;
+                  _currentZoneName = '';
+                  _currentZoneId = 0;
+                });
+                _fetchAttendance(1);
+              },
+              tooltip: 'Back to Zones',
+            ),
+          if (!_isSearching && !_selectionMode)
+            IconButton(
+              icon: const Icon(Icons.calendar_today),
+              onPressed: () => _selectDate(context),
+              tooltip: 'Select Date',
+            ),
+          if (!_isSearching && !_selectionMode)
+            IconButton(
+              icon: const Icon(Icons.search),
+              onPressed: _startSearch,
+            ),
+          if (_selectionMode)
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => _toggleSelectionMode(false),
+            ),
+        ],
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(40.0),
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 8.0),
+            child: Text(
+              DateFormat('MMMM dd, yyyy').format(selectedDate),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 16,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ),
+      ),
+      drawer: _selectionMode ? null : const AppDrawer(),
+      body: Column(
+        children: [
+          if (_isSearching && _searchController.text.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text(
+                '${filteredAttendanceList.length} results found',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+          Expanded(
+            child: RefreshIndicator(
+              onRefresh: () => _isZoneView
+                  ? _fetchZoneAttendance(_currentZoneId, _currentZoneName)
+                  : _fetchAttendance(currentPage),
+              child: isLoading
+                  ? const Center(child: CircularProgressIndicator())
+                  : filteredAttendanceList.isEmpty
+                  ? _buildEmptyState()
+                  : _isManager && !_isZoneView
+                  ? ListView.builder(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                itemCount: filteredAttendanceList.length,
+                itemBuilder: (context, index) {
+                  final item = filteredAttendanceList[index];
+                  return _buildManagerCard(item);
+                },
+              )
+                  : AttendanceListBuilder2(
+                attendanceList: _isSearching
+                    ? filteredAttendanceList
+                    : attendanceList,
+                onAttendanceMarked: () => _isZoneView
+                    ? _fetchZoneAttendance(_currentZoneId, _currentZoneName)
+                    : _fetchAttendance(currentPage),
+                selectionMode: _selectionMode,
+                onSelectionModeChanged: _toggleSelectionMode,
+                onItemSelected: _toggleItemSelection,
+                currentPage: currentPage,
+                totalPages: totalPages,
+                nextPageUrl: nextPageUrl,
+                previousPageUrl: previousPageUrl,
+                onPageChanged: (page) => _isZoneView
+                    ? _fetchZoneAttendance(_currentZoneId, _currentZoneName)
+                    : _fetchAttendance(page),
+                isManager: false,
+              ),
+            ),
+          ),
+        ],
+      ),
+      floatingActionButton: _selectionMode && selectedIds.isNotEmpty && !_isManager
+          ? FloatingActionButton.extended(
+        onPressed: _hasLockedSelectedCards() ? null : _submitBulkAttendance,
+        icon: const Icon(Icons.check),
+        label: const Text('Confirm Selection'),
+        tooltip: _hasLockedSelectedCards() ? 'Selected contains locked cards' : null,
+      )
+          : null,
+    );
+  }
+  bool _hasLockedSelectedCards() {
+    for (var id in selectedIds) {
+      final item = attendanceList.firstWhere((item) => item['id'] == id, orElse: () => {});
+      if (item['lock_card'] == true) {
+        return true;
+      }
+    }
+    return false;
+  }
+}
+
+
+class AttendanceListBuilder2 extends StatefulWidget {
+  final List<dynamic> attendanceList;
+  final VoidCallback onAttendanceMarked;
+  final bool selectionMode;
+  final Function(bool)? onSelectionModeChanged;
+  final Function(int, bool)? onItemSelected;
+  final int currentPage;
+  final int? totalPages;
+  final String? nextPageUrl;
+  final String? previousPageUrl;
+  final Function(int) onPageChanged;
+  final bool isManager;
+
+  const AttendanceListBuilder2({
+    super.key,
+    required this.attendanceList,
+    required this.onAttendanceMarked,
+    this.selectionMode = false,
+    this.onSelectionModeChanged,
+    this.onItemSelected,
+    required this.currentPage,
+    this.totalPages,
+    this.nextPageUrl,
+    this.previousPageUrl,
+    required this.onPageChanged,
+    required this.isManager,
+  });
+
+  @override
+  State<AttendanceListBuilder2> createState() => _AttendanceListBuilder2State();
+}
+
+class _AttendanceListBuilder2State extends State<AttendanceListBuilder2>
+    with SingleTickerProviderStateMixin {
+  late final SlidableController controller = SlidableController(this);
+  bool isLoading = false;
+  bool isLoggedIn = false;
+  String? username;
+  String? password;
+  final String baseUrl = AppConfig.apiUrl;
+
+  Future<Map<String, String>> _getAuthHeaders() async {
+    final prefs = await SharedPreferences.getInstance();
+    username = prefs.getString('username');
+    password = prefs.getString('password');
+
+    return {
+      'Content-Type': 'application/json',
+      'authorization': 'Basic ${base64Encode(utf8.encode('$username:$password'))}'
+    };
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Theme.of(context).colorScheme.error,
+        content: Text(message),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _markAttendance({
+    required int id,
+    required String code,
+    required String remark,
+    required int manualStatus,
+  }) async {
+    setState(() => isLoading = true);
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      username = prefs.getString('username');
+      password = prefs.getString('password');
+
+      final auth = 'Basic ${base64Encode(utf8.encode('$username:$password'))}';
+      final response = await http.post(
+        Uri.parse("$baseUrl/hr/drf_list_n_write_att/"),
+        headers: {
+          'Content-Type': 'application/json',
+          'authorization': auth,
+        },
+        body: jsonEncode({
+          "ma_id": id,
+          "manual_present": manualStatus,
+          "remark": remark,
+        }),
+      );
+
+      if (response.statusCode == 200) {
+        final result = jsonDecode(response.body);
+        _showSuccessPopup(context, result['message']);
+      } else {
+        _showError("Failed to update attendance: ${response.statusCode}");
+      }
+    } catch (e) {
+      _showError("Error: $e");
+    } finally {
+      setState(() => isLoading = false);
+    }
+  }
+
+  void _showSuccessPopup(BuildContext context, String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Icon(Icons.check_circle, color: Colors.green, size: 60),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              message,
+              style: TextStyle(
+                color: Theme.of(context).primaryColor,
+                fontWeight: FontWeight.bold,
+                fontSize: 18,
+              ),
+            ),
+            const SizedBox(height: 10),
+            const Text(
+              'Attendance marked successfully',
+              style: TextStyle(color: Colors.grey),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              widget.onAttendanceMarked();
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showRemarkDialog({
+    required BuildContext context,
+    required int id,
+    required String code,
+    required Function(int, String, String) onSave,
+    required String dialogTitle,
+  }) {
+    final remarkController = TextEditingController();
+    final focusNode = FocusNode();
+
+    showDialog(
+      context: context,
+      builder: (context) => Dialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.edit_note, size: 28, color: Colors.deepPurple),
+                  const SizedBox(width: 12),
+                  Text(
+                    dialogTitle,
+                    style: const TextStyle(
+                      fontSize: 22,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.deepPurple,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+              TextField(
+                controller: remarkController,
+                focusNode: focusNode,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  hintText: 'Write your remarks here...',
+                  filled: true,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: BorderSide.none,
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    borderSide: const BorderSide(
+                      color: Colors.deepPurple,
+                      width: 1.5,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 24),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                  const SizedBox(width: 12),
+                  ElevatedButton(
+                    onPressed: () {
+                      final remark = remarkController.text.trim();
+                      if (remark.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Please write remarks')),
+                        );
+                        focusNode.requestFocus();
+                        return;
+                      }
+                      Navigator.pop(context);
+                      onSave(id, code, remark);
+                    },
+                    child: const Text('Save'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPaginationControls() {
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isSmallScreen = screenWidth < 400;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 20),
+      child: isSmallScreen
+          ? _buildVerticalPagination()
+          : _buildHorizontalPagination(),
+    );
+  }
+
+  Widget _buildHorizontalPagination() {
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (widget.previousPageUrl != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(80, 36),
+                ),
+                onPressed: () {
+                  final prevPage = _extractPageFromUrl(widget.previousPageUrl);
+                  widget.onPageChanged(prevPage);
+                },
+                child: const Text('Prev'),
+              ),
+            ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8.0),
+            child: Text(
+              'Page ${widget.currentPage} of ${widget.totalPages ?? 1}',
+              style: const TextStyle(fontSize: 14),
+            ),
+          ),
+          if (widget.nextPageUrl != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4.0),
+              child: ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  minimumSize: const Size(80, 36),
+                ),
+                onPressed: () {
+                  final nextPage = _extractPageFromUrl(widget.nextPageUrl) ?? widget.currentPage + 1;
+                  widget.onPageChanged(nextPage);
+                },
+                child: const Text('Next'),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildVerticalPagination() {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            if (widget.previousPageUrl != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(80, 36),
+                  ),
+                  onPressed: () {
+                    final prevPage = _extractPageFromUrl(widget.previousPageUrl);
+                    widget.onPageChanged(prevPage);
+                  },
+                  child: const Text('Prev'),
+                ),
+              ),
+            if (widget.nextPageUrl != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4.0),
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    minimumSize: const Size(80, 36),
+                  ),
+                  onPressed: () {
+                    final nextPage = _extractPageFromUrl(widget.nextPageUrl) ?? widget.currentPage + 1;
+                    widget.onPageChanged(nextPage);
+                  },
+                  child: const Text('Next'),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Page ${widget.currentPage} of ${widget.totalPages ?? 1}',
+          style: const TextStyle(fontSize: 14),
+        ),
+      ],
+    );
+  }
+
+  int _extractPageFromUrl(String? url) {
+    if (url == null) return 1;
+    try {
+      Uri uri = Uri.parse(url);
+      String pageString = uri.queryParameters['page'] ?? '1';
+      return int.tryParse(pageString) ?? 1;
+    } catch (e) {
+      return 1;
+    }
+  }
+
+  Widget _buildManagerCard(dynamic item, Function(int, String) onZoneTap) {
+    final zoneName = item['zone_name']?.toString() ?? 'N/A';
+    final zoneCode = item['zone_code']?.toString() ?? 'N/A';
+    final isActive = item['is_active'] ?? false;
+    final zoneId = item['id'] ?? 0;
+
+    return Card(
+      color: Colors.grey[800],
+      child: ListTile(
+        title: Text(
+          zoneCode,
+          style: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 16,
+          ),
+        ),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(zoneName),
+            Text(
+              isActive ? 'Active' : 'Inactive',
+              style: TextStyle(
+                color: isActive ? Colors.green : Colors.red,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ],
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+        onTap: () => onZoneTap(zoneId, zoneName),
+      ),
+    );
+  }
+
+  Widget _buildSupervisorCard(dynamic item, BuildContext context) {
+    final employeeId = item['id']?.toString() ?? 'N/A';
+    final employeeCode = item['essl_code']?.toString() ?? 'N/A';
+    final employeeName = item['employee_name']?.toString() ?? 'N/A';
+    final color = item['color_code']?.toString() ?? 'N/A';
+    final esslStatus = item['essl_status'] ?? false;
+    final esslWritten = item['essl_written'] ?? false;
+    final manualPresent = item['manual_present'] ?? false;
+    final isConflicted = item['is_conflicted'] ?? false;
+    final lockCard = item['lock_card'] ?? false;
+
+    final cardColor =
+    color=="Grey" ? Colors.grey[300] :
+    color=="Red" ? Colors.red[300]:
+    color=="Green" ? Colors.green[300]:
+    color=="Yellow" ? Colors.yellow[300]:
+    color=="White" ? Colors.white:
+    Colors.grey[500];
+
+    return !lockCard?Card(
+      color: cardColor,
+      child: InkWell(
+        onLongPress: () {
+          if (lockCard) {
+            _showLockedCardMessage(context);
+            return;
+          }
+          if (widget.onSelectionModeChanged != null) {
+            widget.onSelectionModeChanged!(true);
+            if (widget.onItemSelected != null) {
+              widget.onItemSelected!(item['id'], true);
+            }
+          }
+        },
+        child: Row(
+          children: [
+            if (widget.selectionMode)
+              Checkbox(
+                value: item['isSelected'] ?? false,
+                onChanged: lockCard
+                    ? null
+                    : (value) {
+                  if (widget.onItemSelected != null) {
+                    widget.onItemSelected!(
+                        item['id'],
+                        value ?? false
+                    );
+                  }
+                },
+              ),
+            Expanded(
+              child: Slidable(
+                key: Key(item['id'].toString()),
+                enabled: !lockCard,
+                startActionPane: ActionPane(
+                  motion: const ScrollMotion(),
+                  extentRatio: 0.25,
+                  children: [
+                    SlidableAction(
+                      onPressed: (context) {
+                        if (esslStatus || manualPresent) {
+                          _showRemarkDialog(
+                            context: context,
+                            id: item['id'],
+                            code: employeeCode,
+                            onSave: (id, code, remark) => _markAttendance(
+                              id: id,
+                              code: code,
+                              remark: remark,
+                              manualStatus: 0,
+                            ),
+                            dialogTitle: 'Mark as Absent',
+                          );
+                        } else {
+                          _markAttendance(
+                            id: item['id'],
+                            code: employeeCode,
+                            remark: '',
+                            manualStatus: 0,
+                          );
+                        }
+                      },
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.red,
+                      borderRadius: BorderRadius.circular(15),
+                      padding: const EdgeInsets.symmetric(horizontal: 5),
+                      icon: Icons.cancel,
+                      label: 'Absent',
+                    ),
+                  ],
+                ),
+                endActionPane: ActionPane(
+                  motion: const ScrollMotion(),
+                  extentRatio: 0.25,
+                  children: [
+                    SlidableAction(
+                      onPressed: (context) {
+                        if (!esslStatus && !manualPresent) {
+                          _showRemarkDialog(
+                            context: context,
+                            id: item['id'],
+                            code: employeeCode,
+                            onSave: (id, code, remark) => _markAttendance(
+                              id: id,
+                              code: code,
+                              remark: remark,
+                              manualStatus: 1,
+                            ),
+                            dialogTitle: 'Mark as Present',
+                          );
+                        } else {
+                          _markAttendance(
+                            id: item['id'],
+                            code: employeeCode,
+                            remark: '',
+                            manualStatus: 1,
+                          );
+                        }
+                      },
+                      backgroundColor: Colors.white,
+                      foregroundColor: Colors.green,
+                      borderRadius: BorderRadius.circular(15),
+                      padding: const EdgeInsets.symmetric(horizontal: 5),
+                      icon: Icons.check_circle,
+                      label: 'Present',
+                    ),
+                  ],
+                ),
+                child: ListTile(
+                  title: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        employeeCode,
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      lockCard?Icon(
+                        Icons.lock,
+                        size: 18,
+                        color: Colors.grey[800],
+                      ):Container()
+                    ],
+                  ),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(employeeId),
+                      Text(employeeName),
+                      Text('ESSL Status: ${esslStatus ? 'Present' : 'Absent'}'),
+                      Text('Manual Status: ${manualPresent ? 'Present' : 'Absent'}'),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ):Container();
+  }
+  void _showLockedCardMessage(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('This card is locked and cannot be modified'),
+        backgroundColor: Colors.orange,
+      ),
+    );
+  }
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    return Column(
+      children: [
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            itemCount: widget.attendanceList.length,
+            itemBuilder: (context, index) {
+              final item = widget.attendanceList[index];
+
+              if (widget.isManager) {
+                return _buildManagerCard(item, (zoneId, zoneName) {
+                  // This will be handled by the parent widget
+                  if (widget.onSelectionModeChanged != null) {
+                    widget.onSelectionModeChanged!(false);
+                  }
+                });
+              } else {
+                return _buildSupervisorCard(item, context);
+              }
+            },
+          ),
+        ),
+        _buildPaginationControls(),
+        const SizedBox(height: 40),
+      ],
+    );
+  }
+}
