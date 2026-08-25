@@ -1,14 +1,15 @@
-import 'dart:io';
-
-import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:greenwarrior/pages/login.dart';
 
-import 'package:greenwarrior/pages/vehicles/vehicles_list.dart';
+import '../pages/d2d/d2d_dashboard_page.dart';
+import '../pages/login.dart';
+import '../services/auth_service.dart';
+import '../services/device_service.dart';
 
-import '../pages/Qr_Scan/bin_collection.dart';
-
+/// Decides the first screen: dashboard when a session is stored, login otherwise.
+///
+/// A stored refresh token is enough. The access token may already have expired,
+/// but [ApiClient] renews it on the first 401 rather than making the user log in
+/// again, and falls back to the login page if that renewal fails.
 class AuthPage extends StatefulWidget {
   const AuthPage({super.key});
 
@@ -17,54 +18,29 @@ class AuthPage extends StatefulWidget {
 }
 
 class _AuthPageState extends State<AuthPage> {
-  bool? isLoggedIn;
+  bool? _hasSession;
 
   @override
   void initState() {
     super.initState();
-    getDeviceId();
-    checkLoginStatus();
+    // Resolve the device id once at startup so it is ready before any scan.
+    DeviceService.deviceId();
+    _checkSession();
   }
 
-  Future<void> getDeviceId() async {
-    final prefs = await SharedPreferences.getInstance();
-    final deviceInfo = DeviceInfoPlugin();
-    String? deviceId = "";
-
-    if (Platform.isAndroid) {
-      final androidInfo = await deviceInfo.androidInfo;
-      await prefs.setString('deviceId', androidInfo.id);
-      print('checccckk___2');
-      print(androidInfo.id);
-
-    } else if (Platform.isIOS) {
-      final iosInfo = await deviceInfo.iosInfo;
-      deviceId = iosInfo.identifierForVendor; // unique per vendor
-    }
-  }
-
-  void checkLoginStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    String? username = prefs.getString('username');
-    String? password = prefs.getString('password');
-
-    setState(() {
-      isLoggedIn = username != null && password != null;
-    });
+  Future<void> _checkSession() async {
+    final hasSession = await AuthService.hasSession();
+    if (!mounted) return;
+    setState(() => _hasSession = hasSession);
   }
 
   @override
   Widget build(BuildContext context) {
-    if (isLoggedIn == null) {
-      // Show loading indicator while checking login status
+    if (_hasSession == null) {
       return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
+        body: Center(child: CircularProgressIndicator()),
       );
-    } else {
-      // Show appropriate screen based on login status
-      return isLoggedIn! ? const LoginPage() : const LoginPage();
     }
+    return _hasSession! ? const D2dDashboardPage() : const LoginPage();
   }
 }

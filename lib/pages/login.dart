@@ -1,17 +1,14 @@
-// lib/screens/login/login_page.dart
-import 'dart:convert';
-import 'dart:io';
-import 'package:device_info_plus/device_info_plus.dart';
+// lib/pages/login.dart
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
-import '../../constants/app_theme.dart';
-import '../../components/buttons/primary_button.dart';
-import '../../components/inputs/custom_text_field.dart';
-import '../../config.dart';
+
 import '../components/app_version.dart';
-import 'Qr_Scan/bin_collection.dart';
+import '../components/buttons/primary_button.dart';
+import '../components/inputs/custom_text_field.dart';
+import '../constants/app_theme.dart';
+import '../services/api_exception.dart';
+import '../services/auth_service.dart';
+import '../services/device_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -45,24 +42,9 @@ class _LoginPageState extends State<LoginPage>
       ),
     );
     _animationController.forward();
-    getDeviceId();
-  }
 
-  Future<void> getDeviceId() async {
-    final prefs = await SharedPreferences.getInstance();
-    final deviceInfo = DeviceInfoPlugin();
-    String? deviceId = "";
-
-    if (Platform.isAndroid) {
-      final androidInfo = await deviceInfo.androidInfo;
-      await prefs.setString('deviceId', androidInfo.id);
-      print('checccckk___2');
-      print(androidInfo.id);
-
-    } else if (Platform.isIOS) {
-      final iosInfo = await deviceInfo.iosInfo;
-      deviceId = iosInfo.identifierForVendor; // unique per vendor
-    }
+    // Warm the device id cache so the first scan submission does not wait on it.
+    DeviceService.deviceId();
   }
 
   Future<void> _login() async {
@@ -71,55 +53,23 @@ class _LoginPageState extends State<LoginPage>
     setState(() => _isLoading = true);
 
     try {
-      final response = await http.post(
-        Uri.parse('${AppConfig.apiUrl}/drf_login/'),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'username': _usernameController.text.trim(),
-          'password': _passwordController.text.trim(),
-        }),
+      await AuthService.login(
+        username: _usernameController.text.trim(),
+        password: _passwordController.text.trim(),
       );
-
-      print('Login_check');
-      print('${AppConfig.apiUrl}/drf_login/');
-      print(response.statusCode);
-      print(response.body);
-
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-
-        final accessToken = data['access'];
-        final refreshToken = data['refresh'];
-        final user = data['user'];
-
-        final prefs = await SharedPreferences.getInstance();
-
-        await prefs.setString('access_token', accessToken);
-        await prefs.setString('refresh_token', refreshToken);
-        await prefs.setInt('userid', user['id']);
-        await prefs.setString('username', user['username']);
-        await prefs.setString('password', _passwordController.text.trim());
-        await prefs.setString('employee_name', user['employee_name'] ?? '');
-
-        await prefs.setString('project', user['project']?.toString() ?? '');
-        await prefs.setString('zone', user['zone']?.toString() ?? '');
-        await prefs.setString('ward', user['ward']?.toString() ?? '');
-
-        if (mounted) {
-          Navigator.pushReplacementNamed(context, '/bin_collection');
-        }
-      } else {
-        final error = jsonDecode(response.body);
-        _showError(error['detail'] ?? 'Login failed');
-      }
-    } catch (e) {
-      _showError('Network error. Please try again.');
+      if (!mounted) return;
+      Navigator.pushReplacementNamed(context, '/d2d_dashboard');
+    } on ApiException catch (error) {
+      // Already carries a user-facing message for 400 / 401 / 403 and for
+      // network failures.
+      _showError(error.message);
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
   }
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -144,7 +94,7 @@ class _LoginPageState extends State<LoginPage>
       onTap: () => FocusScope.of(context).unfocus(),
       child: Scaffold(
         body: Container(
-          decoration:  BoxDecoration(
+          decoration: const BoxDecoration(
             gradient: LinearGradient(
               colors: [Color(0xffb6f0c6), Color(0xffb6f0c6)],
               begin: Alignment.topCenter,
@@ -157,15 +107,20 @@ class _LoginPageState extends State<LoginPage>
                 padding: const EdgeInsets.all(24),
                 child: FadeTransition(
                   opacity: _fadeAnimation,
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      _buildLogo(),
-                      const SizedBox(height: 40),
-                      _buildLoginCard(),
-                      const SizedBox(height: 24),
-                      const AppVersionText(),
-                    ],
+                  // Caps the card width so the form does not stretch across a
+                  // tablet or desktop window.
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        _buildLogo(),
+                        const SizedBox(height: 40),
+                        _buildLoginCard(),
+                        const SizedBox(height: 24),
+                        const AppVersionText(),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -185,7 +140,7 @@ class _LoginPageState extends State<LoginPage>
         borderRadius: BorderRadius.circular(20),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.2),
+            color: Colors.black.withValues(alpha: 0.2),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -208,7 +163,7 @@ class _LoginPageState extends State<LoginPage>
         borderRadius: BorderRadius.circular(24),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.1),
+            color: Colors.black.withValues(alpha: 0.1),
             blurRadius: 20,
             offset: const Offset(0, 10),
           ),
@@ -235,12 +190,10 @@ class _LoginPageState extends State<LoginPage>
             const SizedBox(height: 8),
             CustomTextField(
               controller: _usernameController,
-
               hintText: 'Enter your username',
               prefixIcon: Icons.person_outline,
-
               validator: (value) {
-                if (value == null || value.isEmpty) {
+                if (value == null || value.trim().isEmpty) {
                   return 'Please enter username';
                 }
                 return null;
@@ -276,16 +229,13 @@ class _LoginPageState extends State<LoginPage>
             const SizedBox(height: 30),
 
             _isLoading
-                ? const Center(child: CircularProgressIndicator(
-                color: Colors.green))
+                ? const Center(
+                    child: CircularProgressIndicator(color: Colors.green),
+                  )
                 : PrimaryButton(
-              text: AppStrings.login,
-              onPressed: _login,
-            ),
-
-            const SizedBox(height: 16),
-
-           // _buildBinCollectionButton(),
+                    text: AppStrings.login,
+                    onPressed: _login,
+                  ),
           ],
         ),
       ),
@@ -299,47 +249,6 @@ class _LoginPageState extends State<LoginPage>
         fontSize: 14,
         fontWeight: FontWeight.w500,
         color: AppTheme.textSecondary,
-      ),
-    );
-  }
-
-  Widget _buildBinCollectionButton() {
-    return InkWell(
-      onTap: () {
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const BinCollectionScreen(),
-          ),
-        );
-      },
-      child: Container(
-        width: double.infinity,
-        padding: const EdgeInsets.symmetric(vertical: 14),
-        decoration: BoxDecoration(
-          border: Border.all(
-            color: Colors.green
-          ),
-          gradient: const LinearGradient(
-            colors: [Colors.white, Colors.white],
-          ),
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.qr_code_scanner, color: Colors.green, size: 20),
-            const SizedBox(width: 8),
-            Text(
-              AppStrings.binCollections,
-              style: GoogleFonts.poppins(
-                color: Colors.green,
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
