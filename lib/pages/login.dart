@@ -58,7 +58,7 @@ class _LoginPageState extends State<LoginPage>
         password: _passwordController.text.trim(),
       );
       if (!mounted) return;
-      Navigator.pushReplacementNamed(context, '/d2d_dashboard');
+      Navigator.pushReplacementNamed(context, '/bin_collection');
     } on ApiException catch (error) {
       // Already carries a user-facing message for 400 / 401 / 403 and for
       // network failures.

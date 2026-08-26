@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
-import '../pages/d2d/d2d_dashboard_page.dart';
+import '../pages/Qr_Scan/bin_collection.dart';
 import '../pages/login.dart';
 import '../services/auth_service.dart';
 import '../services/device_service.dart';
 
-/// Decides the first screen: dashboard when a session is stored, login otherwise.
+/// Decides the first screen: the D2D collections screen when a session is
+/// stored, login otherwise.
 ///
 /// A stored refresh token is enough. The access token may already have expired,
 /// but [ApiClient] renews it on the first 401 rather than making the user log in
@@ -41,6 +42,6 @@ class _AuthPageState extends State<AuthPage> {
         body: Center(child: CircularProgressIndicator()),
       );
     }
-    return _hasSession! ? const D2dDashboardPage() : const LoginPage();
+    return _hasSession! ? const BinCollectionScreen() : const LoginPage();
   }
 }
